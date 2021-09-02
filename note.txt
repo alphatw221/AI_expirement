@@ -1,0 +1,8 @@
+pip install virtualenv
+python -m virtualenv --python=C:\Users\xxx\xxx <env_name>
+
+<env_name>\Script\activate
+
+pip install -r requirement.txt
+
+deactivate
