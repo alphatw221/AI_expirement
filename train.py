@@ -4,15 +4,15 @@ from typing import Callable
 import tensorflow as tf
 import tensorflow_addons as tfa
 
-from nfnet import NFNet, nfnet_params
-from dataset import makeDataset
+from nfnets.nfnet import NFNet, nfnet_params
+from nfnets.dataset import makeTrainValDataset
 import os
 
 LABEL_SMOOTHING=0.1
-LEARNING_RATE=0.001
-DROPRATE=0.2
+LEARNING_RATE=0.01       #使用AGD 論文使用0.1
+DROPRATE=0.2            #F0 架構 使用0.2
 EMA_DECAY=0.99999
-CLIPPING_FACTOR=0.01
+CLIPPING_FACTOR=0.01     #論文建議0.01
 
 
 
@@ -32,6 +32,7 @@ def parse_args():
     ap.add_argument(
         "-mp",
         "--model_path",
+        default="./",
         type=str,
         help="model path",
     )
@@ -46,14 +47,14 @@ def parse_args():
     ap.add_argument(
         "-b",
         "--batch_size",
-        default=16,
+        default=1,
         type=int,
         help="train batch size",
     )
     ap.add_argument(
         "-n",
         "--num_epochs",
-        default=300,
+        default=1,
         type=int,
         help="number of training epochs",
     )
@@ -62,70 +63,68 @@ def parse_args():
 
 
 def main(args):
+    ngFileNames=os.listdir(os.path.join(args.data_path,"train","0"))
+    okFileNames=os.listdir(os.path.join(args.data_path,"train","1"))
+    numberOfImage=len(ngFileNames)+len(okFileNames)
+    
+    steps_per_epoch = numberOfImage / args.batch_size
+    training_steps = (numberOfImage * args.num_epochs) / args.batch_size
+    train_imsize = nfnet_params[args.variant]["train_imsize"]
+    #test_imsize = nfnet_params[args.variant]["test_imsize"]
+    modelPath=args.model_path
+    
+    ds_train,ds_valid=makeTrainValDataset(dataPath=args.data_path,batchSize=args.batch_size,imageSize=train_imsize)
+    
+    
+    print("Creating New Model...")
+    model = NFNet(
+        num_classes=1,
+        variant=args.variant,
+        drop_rate=DROPRATE,
+        label_smoothing=LABEL_SMOOTHING,
+        ema_decay=EMA_DECAY,              #給指metrics的
+        clipping_factor=CLIPPING_FACTOR
+    )
+    model.build((1, train_imsize, train_imsize, 3))  #batch_input_shape
 
-    try:
-        ngFileNames=os.listdir(os.path.join(args.data_path,"train","0"))
-        okFileNames=os.listdir(os.path.join(args.data_path,"train","1"))
-        numberOfImage=len(ngFileNames)+len(okFileNames)
-        
-        steps_per_epoch = numberOfImage / args.batch_size
-        training_steps = (numberOfImage * args.num_epochs) / args.batch_size
-        train_imsize = nfnet_params[args.variant]["train_imsize"]
-        test_imsize = nfnet_params[args.variant]["test_imsize"]
+    max_lr = LEARNING_RATE * args.batch_size / 256
 
-        
-        
-        eval_preproc = "resize_crop_32"
+    lr_decayed_fn = tf.keras.experimental.CosineDecay(
+        initial_learning_rate=max_lr,
+        decay_steps=training_steps - 5 * steps_per_epoch,
+    )
 
-        model = NFNet(
-            num_classes=1000,
-            variant=args.variant,
-            drop_rate=DROPRATE,
-            label_smoothing=LABEL_SMOOTHING,
-            ema_decay=EMA_DECAY,
-            clipping_factor=CLIPPING_FACTOR
-        )
+    lr_schedule = WarmUp(
+        initial_learning_rate=max_lr,
+        decay_schedule_fn=lr_decayed_fn,
+        warmup_steps=5 * steps_per_epoch,
+    )
 
-        model.build((1, train_imsize, train_imsize, 3))  #batch_input_shape
+    optimizer = tfa.optimizers.SGDW(
+        learning_rate=lr_schedule, weight_decay=2e-5, momentum=0.9
+    )
 
-        max_lr = LEARNING_RATE * args.batch_size / 256
-        lr_decayed_fn = tf.keras.experimental.CosineDecay(
-            initial_learning_rate=max_lr,
-            decay_steps=training_steps - 5 * steps_per_epoch,
-        )
+    model.compile(
+        optimizer=optimizer,
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=[
+            tf.keras.metrics.SparseCategoricalAccuracy(name="top_1_acc"),
+            tf.keras.metrics.SparseTopKCategoricalAccuracy(
+                k=5, name="top_5_acc"
+            ),
+        ],
+    )
+    model.summary()
 
-        lr_schedule = WarmUp(
-            initial_learning_rate=max_lr,
-            decay_schedule_fn=lr_decayed_fn,
-            warmup_steps=5 * steps_per_epoch,
-        )
 
-        optimizer = tfa.optimizers.SGDW(
-            learning_rate=lr_schedule, weight_decay=2e-5, momentum=0.9
-        )
+    model.fit(
+        ds_train,
+        validation_data=ds_valid,
+        epochs=args.num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        callbacks=[tf.keras.callbacks.TensorBoard()],
+    )
 
-        model.compile(
-            optimizer=optimizer,
-            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            metrics=[
-                tf.keras.metrics.SparseCategoricalAccuracy(name="top_1_acc"),
-                tf.keras.metrics.SparseTopKCategoricalAccuracy(
-                    k=5, name="top_5_acc"
-                ),
-            ],
-        )
-
-        ds_train,ds_valid=makeDataset(dataPath=args.data_path,batch_size=args.batch_size)
-
-        model.fit(#TODO 改成dataset pipeline
-            ds_train,
-            validation_data=ds_test,
-            epochs=args.num_epochs,
-            steps_per_epoch=steps_per_epoch,
-            callbacks=[tf.keras.callbacks.TensorBoard()],
-        )
-    except Exception as e:
-        print(e)
 
 # Patched from: https://huggingface.co/transformers/_modules/transformers/optimization_tf.html#WarmUp
 class WarmUp(tf.keras.optimizers.schedules.LearningRateSchedule):
