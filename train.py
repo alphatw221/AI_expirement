@@ -67,7 +67,8 @@ def main(args):
     gpus = tf.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
-
+    tf.compat.v1.disable_eager_execution()
+    
     ngFileNames=os.listdir(os.path.join(args.data_path,"train","0"))
     okFileNames=os.listdir(os.path.join(args.data_path,"train","1"))
     numberOfImage=len(ngFileNames)+len(okFileNames)
