@@ -16,7 +16,7 @@ CLIPPING_FACTOR=0.01     #論文建議0.01
 
 
 #python38_env\Scripts\python.exe train.py --data_path=\\192.168.1.65\d\TrainCreate\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210903163210
-
+#python38\Scripts\python.exe train.py --data_path=D:\TrainCreate\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210903163210
 def parse_args():
     ap = argparse.ArgumentParser()
 

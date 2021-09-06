@@ -32,7 +32,7 @@ def makeTrainValDataset(dataPath,batchSize,imageSize):
     trainLabels=["0"]*len(trainOkFileNames)+["1"]*len(trainNgFileNames)
     
     trainDataset=tf.data.Dataset.from_tensor_slices((trainFileNames,trainLabels)).shuffle(buffer_size=len(trainLabels))
-    trainDataset=trainDataset.map(lambda x,y:mappable_fn(x,y,os.path.join(dataPath,"train"),imageSize), num_parallel_calls=1 ).batch(batchSize).prefetch(1)
+    trainDataset=trainDataset.map(lambda x,y:mappable_fn(x,y,os.path.join(dataPath,"train"),imageSize)).batch(batchSize)
 
 
     valOkPath=os.path.join(dataPath,"val","0")
@@ -45,6 +45,6 @@ def makeTrainValDataset(dataPath,batchSize,imageSize):
     valLabels=(["0"]*len(valOkFileNames))+["1"]*len(valNgFileNames)
 
     valDataset=tf.data.Dataset.from_tensor_slices((valFileNames,valLabels)).shuffle(buffer_size=len(valLabels))
-    valDataset=valDataset.map(lambda x,y:tf.py_function(load_file,[x,y,os.path.join(dataPath,"val"),imageSize],[tf.float32,tf.float32])).batch(batchSize)
+    valDataset=valDataset.map(lambda x,y:mappable_fn(x,y,os.path.join(dataPath,"val"),imageSize)).batch(batchSize)
 
     return trainDataset,valDataset
