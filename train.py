@@ -9,12 +9,13 @@ from nfnets.dataset import makeTrainValDataset
 import os
 
 LABEL_SMOOTHING=0.1
-LEARNING_RATE=0.01       #使用AGD 論文使用0.1
+LEARNING_RATE=0.1       #使用AGD 論文使用0.1
 DROPRATE=0.2            #F0 架構 使用0.2
-EMA_DECAY=0.99999
+EMA_DECAY=0.99999       #matrics使用
 CLIPPING_FACTOR=0.01     #論文建議0.01
 
 
+#python38_env\Scripts\python.exe train.py --data_path=\\192.168.1.65\d\TrainCreate\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210903163210
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -63,6 +64,10 @@ def parse_args():
 
 
 def main(args):
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+
     ngFileNames=os.listdir(os.path.join(args.data_path,"train","0"))
     okFileNames=os.listdir(os.path.join(args.data_path,"train","1"))
     numberOfImage=len(ngFileNames)+len(okFileNames)
@@ -77,53 +82,56 @@ def main(args):
     
     
     print("Creating New Model...")
-    model = NFNet(
-        num_classes=1,
-        variant=args.variant,
-        drop_rate=DROPRATE,
-        label_smoothing=LABEL_SMOOTHING,
-        ema_decay=EMA_DECAY,              #給指metrics的
-        clipping_factor=CLIPPING_FACTOR
-    )
-    model.build((1, train_imsize, train_imsize, 3))  #batch_input_shape
+    
+    with tf.device('/gpu:0'):
+        model = NFNet(
+            num_classes=1,
+            variant=args.variant,
+            drop_rate=DROPRATE,
+            label_smoothing=LABEL_SMOOTHING,
+            ema_decay=EMA_DECAY,              #給指metrics的
+            clipping_factor=CLIPPING_FACTOR
+        )
+        model.build((1, train_imsize, train_imsize, 3))  #batch_input_shape
 
-    max_lr = LEARNING_RATE * args.batch_size / 256
+        max_lr = LEARNING_RATE * args.batch_size / 256
 
-    lr_decayed_fn = tf.keras.experimental.CosineDecay(
-        initial_learning_rate=max_lr,
-        decay_steps=training_steps - 5 * steps_per_epoch,
-    )
+        lr_decayed_fn = tf.keras.experimental.CosineDecay(
+            initial_learning_rate=max_lr,
+            decay_steps=training_steps - 5 * steps_per_epoch,
+        )
 
-    lr_schedule = WarmUp(
-        initial_learning_rate=max_lr,
-        decay_schedule_fn=lr_decayed_fn,
-        warmup_steps=5 * steps_per_epoch,
-    )
+        lr_schedule = WarmUp(
+            initial_learning_rate=max_lr,
+            decay_schedule_fn=lr_decayed_fn,
+            warmup_steps=5 * steps_per_epoch,
+        )
 
-    optimizer = tfa.optimizers.SGDW(
-        learning_rate=lr_schedule, weight_decay=2e-5, momentum=0.9
-    )
+        optimizer = tfa.optimizers.SGDW(
+            learning_rate=lr_schedule, weight_decay=2e-5, momentum=0.9
+        )
+        
+        model.compile(
+            optimizer=optimizer,
+            # loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+            # metrics=[
+            #     tf.keras.metrics.SparseCategoricalAccuracy(name="top_1_acc"),
+            #     tf.keras.metrics.SparseTopKCategoricalAccuracy(
+            #         k=5, name="top_5_acc"
+            #     ),
+            # ],
+        )
+        model.summary()
 
-    model.compile(
-        optimizer=optimizer,
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-        metrics=[
-            tf.keras.metrics.SparseCategoricalAccuracy(name="top_1_acc"),
-            tf.keras.metrics.SparseTopKCategoricalAccuracy(
-                k=5, name="top_5_acc"
-            ),
-        ],
-    )
-    model.summary()
 
-
-    model.fit(
-        ds_train,
-        validation_data=ds_valid,
-        epochs=args.num_epochs,
-        steps_per_epoch=steps_per_epoch,
-        callbacks=[tf.keras.callbacks.TensorBoard()],
-    )
+        model.fit(
+            ds_train,
+            validation_data=ds_valid,
+            epochs=args.num_epochs,
+            steps_per_epoch=steps_per_epoch,
+            callbacks=[tf.keras.callbacks.TensorBoard()],
+        )
 
 
 # Patched from: https://huggingface.co/transformers/_modules/transformers/optimization_tf.html#WarmUp
