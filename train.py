@@ -5,10 +5,13 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 
 from nfnets.nfnet import NFNet, nfnet_params
-from nfnets.dataset import makeTrainValDataset
+from nfnets.dataset import makeDataset, makeDatasetFromDLS
+from nfnets.other import WarmUpSchedule
+
+import pathlib
 import os
 
-LABEL_SMOOTHING=0.1
+LABEL_SMOOTHING=0.1     #二分類標籤0,1大約修飾成0.1,0.9  
 LEARNING_RATE=0.1       #使用AGD 論文使用0.1
 DROPRATE=0.2            #F0 架構 使用0.2
 EMA_DECAY=0.99999       #matrics使用
@@ -16,7 +19,10 @@ CLIPPING_FACTOR=0.01     #論文建議0.01
 
 
 #python38_env\Scripts\python.exe train.py --data_path=\\192.168.1.65\d\TrainCreate\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210903163210
-#python38\Scripts\python.exe train.py --data_path=D:\TrainCreate\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210903163210
+#python38_env\Scripts\python.exe train.py --data_path=C:\Users\AlphaLin\Desktop\LianQiao\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210706200358
+#python38_env\Scripts\python.exe train.py --data_path=C:\Users\AlphaLin\Desktop\LianQiao\Dataset\LianQiao_Green_Golden_OSP_25um\dataset20210706200358 --model_path=C:\Users\AlphaLin\Desktop\NFestNet\model\default.h5
+#python38_env\Scripts\python.exe train.py --data_path=\\192.168.1.65\d\LIN\s017004tt1304-07a-dmc#s017004tt1304-07a-dmc[I001-M2012050090]_6#20210104#200
+#python38_env\Scripts\python.exe train.py --data_path=D:\SynpowerLabelData\s017004tt1304-07a-dmc#s017004tt1304-07a-dmc[I001-M2012050090]_6#20210104#200
 def parse_args():
     ap = argparse.ArgumentParser()
 
@@ -33,7 +39,7 @@ def parse_args():
     ap.add_argument(
         "-mp",
         "--model_path",
-        default="./",
+        default=None,
         type=str,
         help="model path",
     )
@@ -48,14 +54,14 @@ def parse_args():
     ap.add_argument(
         "-b",
         "--batch_size",
-        default=1,
+        default=8,
         type=int,
         help="train batch size",
     )
     ap.add_argument(
         "-n",
         "--num_epochs",
-        default=1,
+        default=5,
         type=int,
         help="number of training epochs",
     )
@@ -67,33 +73,33 @@ def main(args):
     gpus = tf.config.experimental.list_physical_devices('GPU')
     for gpu in gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
-    tf.compat.v1.disable_eager_execution()
     
-    ngFileNames=os.listdir(os.path.join(args.data_path,"train","0"))
-    okFileNames=os.listdir(os.path.join(args.data_path,"train","1"))
-    numberOfImage=len(ngFileNames)+len(okFileNames)
-    
-    steps_per_epoch = numberOfImage / args.batch_size
-    training_steps = (numberOfImage * args.num_epochs) / args.batch_size
     train_imsize = nfnet_params[args.variant]["train_imsize"]
-    #test_imsize = nfnet_params[args.variant]["test_imsize"]
-    modelPath=args.model_path
+    test_imsize = nfnet_params[args.variant]["test_imsize"]
     
-    ds_train,ds_valid=makeTrainValDataset(dataPath=args.data_path,batchSize=args.batch_size,imageSize=train_imsize)
+    ds_train, ds_valid, ds_test, trainSize = makeDatasetFromDLS(
+        dataPath=args.data_path,
+        batchSize=args.batch_size,
+        epochSize=args.num_epochs,
+        trainImageSize=train_imsize,
+        testImageSize=test_imsize
+    )
+
+    steps_per_epoch = int(trainSize / args.batch_size)
+    training_steps = (trainSize * args.num_epochs) / args.batch_size
     
-    
-    print("Creating New Model...")
     
     with tf.device('/gpu:0'):
+        print("Initialing Model...")
         model = NFNet(
-            num_classes=1,
+            num_classes=2,
             variant=args.variant,
             drop_rate=DROPRATE,
             label_smoothing=LABEL_SMOOTHING,
-            ema_decay=EMA_DECAY,              #給指metrics的
+            ema_decay=EMA_DECAY,              
             clipping_factor=CLIPPING_FACTOR
         )
-        model.build((1, train_imsize, train_imsize, 3))  #batch_input_shape
+        model.build((1, train_imsize, train_imsize, 6))  #batch_input_shape
 
         max_lr = LEARNING_RATE * args.batch_size / 256
 
@@ -101,31 +107,30 @@ def main(args):
             initial_learning_rate=max_lr,
             decay_steps=training_steps - 5 * steps_per_epoch,
         )
-
-        lr_schedule = WarmUp(
-            initial_learning_rate=max_lr,
+        lr_schedule = WarmUpSchedule(
+            initial_learning_rate=max_lr,   #初始IR=LEARNING_RATE* batch_size/256   batch越大 lr越大
             decay_schedule_fn=lr_decayed_fn,
-            warmup_steps=5 * steps_per_epoch,
+            warmup_steps=5 * steps_per_epoch,  #warmup_steps設為五個epoch #第五個epoch後使用cosineDecay #第五個以前使用 初始IR*warmup完成百分比
         )
-
         optimizer = tfa.optimizers.SGDW(
             learning_rate=lr_schedule, weight_decay=2e-5, momentum=0.9
         )
         
         model.compile(
             optimizer=optimizer,
-            # loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-            loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-            # metrics=[
-            #     tf.keras.metrics.SparseCategoricalAccuracy(name="top_1_acc"),
-            #     tf.keras.metrics.SparseTopKCategoricalAccuracy(
-            #         k=5, name="top_5_acc"
-            #     ),
-            # ],
+            # loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+            loss=tf.keras.losses.CategoricalCrossentropy(),
+            metrics=['categorical_accuracy']
+            #TODO 自訂一TP TN FP FN metrics
         )
-        model.summary()
 
 
+        if args.model_path and os.path.isfile(args.model_path):
+            print("Load model weights...")
+            model.load_weights(args.model_path,by_name=False)
+            print("Load model successfully.")
+        
+                
         model.fit(
             ds_train,
             validation_data=ds_valid,
@@ -134,65 +139,15 @@ def main(args):
             callbacks=[tf.keras.callbacks.TensorBoard()],
         )
 
+        filePath=args.model_path if args.model_path else './model/default.h5'
 
-# Patched from: https://huggingface.co/transformers/_modules/transformers/optimization_tf.html#WarmUp
-class WarmUp(tf.keras.optimizers.schedules.LearningRateSchedule):
-    """
-    Applies a warmup schedule on a given learning rate decay schedule.
-    Args:
-        initial_learning_rate (:obj:`float`):
-            The initial learning rate for the schedule after the warmup (so this will be the learning rate at the end
-            of the warmup).
-        decay_schedule_fn (:obj:`Callable`):
-            The schedule function to apply after the warmup for the rest of training.
-        warmup_steps (:obj:`int`):
-            The number of steps for the warmup part of training.
-        power (:obj:`float`, `optional`, defaults to 1):
-            The power to use for the polynomial warmup (defaults is a linear warmup).
-        name (:obj:`str`, `optional`):
-            Optional name prefix for the returned tensors during the schedule.
-    """
+        dirName = os.path.dirname(filePath)
+        if not os.path.exists(dirName):
+            os.makedirs(dirName)
 
-    def __init__(
-        self,
-        initial_learning_rate: float,
-        decay_schedule_fn: Callable,
-        warmup_steps: int,
-        power: float = 1.0,
-        name: str = None,
-    ):
-        super().__init__()
-        self.initial_learning_rate = initial_learning_rate
-        self.warmup_steps = warmup_steps
-        self.power = power
-        self.decay_schedule_fn = decay_schedule_fn
-        self.name = name
-
-    def __call__(self, step):
-        with tf.name_scope(self.name or "WarmUp") as name:
-            # Implements polynomial warmup. i.e., if global_step < warmup_steps, the
-            # learning rate will be `global_step/num_warmup_steps * init_lr`.
-            global_step_float = tf.cast(step, tf.float32)
-            warmup_steps_float = tf.cast(self.warmup_steps, tf.float32)
-            warmup_percent_done = global_step_float / warmup_steps_float
-            warmup_learning_rate = self.initial_learning_rate * tf.math.pow(
-                warmup_percent_done, self.power
-            )
-            return tf.cond(
-                global_step_float < warmup_steps_float,
-                lambda: warmup_learning_rate,
-                lambda: self.decay_schedule_fn(step - self.warmup_steps),
-                name=name,
-            )
-
-    def get_config(self):
-        return {
-            "initial_learning_rate": self.initial_learning_rate,
-            "decay_schedule_fn": self.decay_schedule_fn,
-            "warmup_steps": self.warmup_steps,
-            "power": self.power,
-            "name": self.name,
-        }
+        for i in range(len(model.weights)):
+            model.weights[i]._handle_name = str(i)   #weight name 保密
+        model.save_weights(filePath,overwrite=False)
 
 
 if __name__ == "__main__":

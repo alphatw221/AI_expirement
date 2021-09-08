@@ -8,14 +8,24 @@ nfnet_params = {}
 # F-series models
 nfnet_params.update(
     **{
+        # "F0": {
+        #     "width": [256, 512, 1536, 1536],
+        #     "depth": [1, 2, 6, 3],
+        #     "train_imsize": 192,
+        #     "test_imsize": 256,
+        #     "RA_level": "405",
+        #     "drop_rate": 0.2,
+        # },
+
         "F0": {
             "width": [256, 512, 1536, 1536],
             "depth": [1, 2, 6, 3],
-            "train_imsize": 192,
-            "test_imsize": 256,
+            "train_imsize": 200,
+            "test_imsize": 200,
             "RA_level": "405",
             "drop_rate": 0.2,
         },
+
         "F1": {
             "width": [256, 512, 1536, 1536],
             "depth": [2, 4, 12, 6],
@@ -92,6 +102,7 @@ nfnet_params.update(
 # Nonlinearities with magic constants (gamma) baked in.
 # Note that not all nonlinearities will be stable, especially if they are
 # not perfectly monotonic. Good choices include relu, silu, and gelu.
+#gamma 是 non-linearity specific gain 為了讓 WSConv2D 曾 保持 相同變異數 (variance preserving)
 nonlinearities = {
     "identity": lambda x: x,
     "celu": lambda x: tf.nn.crelu(x) * 1.270926833152771,
@@ -274,8 +285,10 @@ class NFNet(tf.keras.Model):
         if fc_init is None:
             fc_init = tf.keras.initializers.RandomNormal(mean=0, stddev=0.01)
         self.fc = tf.keras.layers.Dense(
-            self.num_classes, kernel_initializer=fc_init, use_bias=True
+            self.num_classes, kernel_initializer=fc_init, use_bias=False, activation='softmax'
         )
+
+        self.shrink_fc=tf.keras.layers.Dense(100)        
 
     def call(self, x, training=True):
         """Return the output of the final layer without any [log-]softmax."""
@@ -292,14 +305,17 @@ class NFNet(tf.keras.Model):
         # Optionally apply dropout
         if self.drop_rate > 0.0 and training:
             pool = tf.keras.layers.Dropout(self.drop_rate)(pool)
-        outputs["logits"] = self.fc(pool)
+
+        x=self.shrink_fc(pool)
+        x = tf.keras.layers.Lambda(self.activation)(x)
+        outputs["logits"] = self.fc(x)
         return outputs
 
     def train_step(self, data):
         x, y_true = data
         with tf.GradientTape() as tape:
             y_pred = self(x, training=True)
-            y_true = self.spositives * y_true + self.snegatives
+            # y_true = self.spositives * y_true + self.snegatives    #label smoothing  BCE 先不用
             loss_values = self.compiled_loss(y_true, y_pred["logits"])
 
         gradients = tape.gradient(loss_values, self.trainable_weights)
