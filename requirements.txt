@@ -1,12 +1,6 @@
-
-Pillow
-numpy>=1.18.0
-opencv_contrib_python
+tensorflow_gpu==2.5.0
+numpy==1.19.5
+Pillow==8.3.0
+tensorflow==2.5.0
 matplotlib
-tensorflow==2.4.0
-tensorflow-datasets>=4.1.0
-tensorflow-addons==0.12.1
-tensorflow-probability>=0.12.1
-keras-tuner==1.0.2
-pandas==1.1.5
-ml_collections>=0.1
+opencv-python
